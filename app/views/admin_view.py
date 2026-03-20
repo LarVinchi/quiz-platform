@@ -4,9 +4,30 @@ import json
 import os
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from app.core.database import SessionLocal
 from app.core.models import Quiz, Question, User, Submission, Answer 
+
+# --- HELPER FOR TIME ---
+def get_wat_time():
+    return datetime.utcnow() + timedelta(hours=1)
+
+# --- STRICT DATASET SCANNER ---
+def get_available_datasets():
+    """Scans ONLY the dedicated 'datasets' folder for valid files."""
+    valid_exts = ('.db', '.sqlite', '.csv', '.parquet', '.xlsx', '.json')
+    available_files = []
+    
+    # Strictly check only the designated datasets directory
+    if os.path.exists("datasets"):
+        for f in os.listdir("datasets"):
+            if f.lower().endswith(valid_exts):
+                # Keep the folder path so the app knows exactly where it is
+                available_files.append(os.path.join("datasets", f))
+                
+    # Sort alphabetically for a clean UI dropdown
+    return sorted(list(set(available_files)))
+
 
 # --- AUTO-SCHEMA GENERATOR ---
 def extract_sqlite_schema(db_path):
@@ -103,6 +124,11 @@ def inject_admin_css():
         .question-row:hover {
             background: rgba(255,255,255,0.05);
         }
+        
+        /* Compact Button Styling for Actions */
+        .stButton button {
+            font-weight: 600 !important;
+        }
     </style>
     """, unsafe_allow_html=True)
 
@@ -110,9 +136,9 @@ def inject_admin_css():
 def admin_dashboard():
     inject_admin_css()
     
-    # Initialize session state for isolated question viewing
-    if 'editing_q_id' not in st.session_state:
-        st.session_state.editing_q_id = None
+    # Initialize session states for isolated viewing/editing
+    if 'editing_q_id' not in st.session_state: st.session_state.editing_q_id = None
+    if 'editing_quiz_id' not in st.session_state: st.session_state.editing_quiz_id = None
 
     # Wrap the Dashboard in columns for a sleek, centered web-app feel
     _, center_dashboard, _ = st.columns([0.5, 8, 0.5])
@@ -133,9 +159,9 @@ def admin_dashboard():
         
         db = get_db()
 
-        # Dynamic Tabs - Now separated Add Questions vs Question Bank
+        # Dynamic Tabs
         tabs_list = [
-            "Deploy Assessment", 
+            "Manage Modules", 
             "Add Questions", 
             "Question Bank",
             "User Access", 
@@ -148,30 +174,141 @@ def admin_dashboard():
         tabs = st.tabs(tabs_list)
 
         # ----------------------------
-        # TAB 1: DEPLOY ASSESSMENT
+        # TAB 1: MANAGE MODULES (Assessments)
         # ----------------------------
         with tabs[0]:
-            st.markdown('<div class="section-header">Configure New Module</div>', unsafe_allow_html=True)
-            with st.form("deploy_form"):
-                title = st.text_input("Assessment Title", placeholder="e.g., Module 1: Advanced SQL Joins")
-                desc = st.text_area("Module Objectives", placeholder="Enter the goals and instructions for this assessment...")
+            # STATE 1: List & Create View
+            if st.session_state.editing_quiz_id is None:
+                st.markdown('<div class="section-header">Module Management</div>', unsafe_allow_html=True)
                 
-                col1, col2 = st.columns(2)
-                with col1: due_date = st.date_input("Submission Date Deadline")
-                with col2: due_time = st.time_input("Submission Time Deadline")
+                with st.expander("➕ Create New Assessment Module", expanded=False):
+                    with st.form("deploy_form"):
+                        title = st.text_input("Assessment Title", placeholder="e.g., Module 1: Advanced SQL Joins")
+                        desc = st.text_area("Module Objectives", placeholder="Enter the goals and instructions for this assessment...")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1: due_date = st.date_input("Submission Date Deadline")
+                        with col2: due_time = st.time_input("Submission Time Deadline")
 
-                st.markdown("<br>", unsafe_allow_html=True)
-                submit_btn = st.form_submit_button("Publish Assessment", type="primary")
+                        is_active = st.checkbox("Publish Immediately (Visible to Students)", value=False)
 
-                if submit_btn:
-                    if title:
-                        full_deadline = datetime.combine(due_date, due_time)
-                        new_quiz = Quiz(title=title, description=desc, due_date=full_deadline)
-                        db.add(new_quiz)
+                        st.markdown("**Assessment Datasets (Optional)**")
+                        st.caption("Upload the databases or CSVs required for this assessment here.")
+                        uploaded_files = st.file_uploader(
+                            "Supported: .db, .sqlite, .csv, .parquet, .xlsx, .json", 
+                            type=["db", "sqlite", "csv", "parquet", "xlsx", "json"], 
+                            accept_multiple_files=True
+                        )
+
+                        st.markdown("<br>", unsafe_allow_html=True)
+                        submit_btn = st.form_submit_button("Create Assessment", type="primary")
+
+                        if submit_btn:
+                            if title:
+                                full_deadline = datetime.combine(due_date, due_time)
+                                new_quiz = Quiz(title=title, description=desc, due_date=full_deadline, active=is_active)
+                                db.add(new_quiz)
+                                db.commit()
+                                
+                                # Process files and link them to this specific quiz
+                                if uploaded_files:
+                                    os.makedirs("datasets", exist_ok=True)
+                                    for uf in uploaded_files:
+                                        safe_filename = f"quiz_{new_quiz.quiz_id}_{uf.name}"
+                                        dataset_path = os.path.join("datasets", safe_filename)
+                                        with open(dataset_path, "wb") as f:
+                                            f.write(uf.getbuffer())
+
+                                st.success(f"Module '{title}' created successfully!")
+                                st.rerun()
+                            else:
+                                st.error("Please provide a module title.")
+
+                st.markdown('<br><div class="section-header">Existing Modules</div>', unsafe_allow_html=True)
+                quizzes = db.query(Quiz).all()
+                if not quizzes:
+                    st.info("No modules created yet.")
+                else:
+                    for q in quizzes:
+                        with st.container(border=True):
+                            c1, c2, c3 = st.columns([3.5, 2, 4], vertical_alignment="center")
+                            with c1:
+                                st.markdown(f"**{q.title}**")
+                                st.caption(f"Due: {q.due_date.strftime('%Y-%m-%d %H:%M')}")
+                            with c2:
+                                if q.active: st.markdown("<span style='color:#50FA7B;'>● Published</span>", unsafe_allow_html=True)
+                                else: st.markdown("<span style='color:#94A3B8;'>● Draft (Recalled)</span>", unsafe_allow_html=True)
+                            with c3:
+                                action_c1, action_c2, action_c3 = st.columns(3)
+                                if action_c1.button("⚙️ Edit", key=f"edit_mod_{q.quiz_id}", use_container_width=True):
+                                    st.session_state.editing_quiz_id = q.quiz_id
+                                    st.rerun()
+                                
+                                toggle_lbl = "⏸️ Recall" if q.active else "🚀 Publish"
+                                if action_c2.button(toggle_lbl, key=f"tgl_mod_{q.quiz_id}", use_container_width=True):
+                                    q.active = not q.active
+                                    db.commit()
+                                    st.rerun()
+                                
+                                # Delete requires cleaning up linked Questions, Submissions, and Answers to prevent DB corruption
+                                if action_c3.button("🗑️ Delete", key=f"del_mod_{q.quiz_id}", type="primary", use_container_width=True):
+                                    subs = db.query(Submission).filter(Submission.quiz_id == q.quiz_id).all()
+                                    for s in subs:
+                                        db.query(Answer).filter(Answer.submission_id == s.submission_id).delete()
+                                        db.delete(s)
+                                    db.query(Question).filter(Question.quiz_id == q.quiz_id).delete()
+                                    db.delete(q)
+                                    db.commit()
+                                    st.warning(f"Deleted Module: {q.title}")
+                                    st.rerun()
+
+            # STATE 2: Isolated Edit View for Modules
+            else:
+                q_edit = db.query(Quiz).filter(Quiz.quiz_id == st.session_state.editing_quiz_id).first()
+                if not q_edit:
+                    st.session_state.editing_quiz_id = None
+                    st.rerun()
+                    
+                if st.button("⬅ Back to Module List"):
+                    st.session_state.editing_quiz_id = None
+                    st.rerun()
+                    
+                st.markdown(f'### Editing Module: `{q_edit.title}`')
+                with st.form("edit_module_form"):
+                    new_title = st.text_input("Assessment Title", value=q_edit.title)
+                    new_desc = st.text_area("Module Objectives", value=q_edit.description)
+                    
+                    col1, col2 = st.columns(2)
+                    with col1: new_date = st.date_input("Submission Date Deadline", value=q_edit.due_date.date())
+                    with col2: new_time = st.time_input("Submission Time Deadline", value=q_edit.due_date.time())
+                    
+                    st.markdown("**Append Additional Datasets (Optional)**")
+                    st.caption("Need to add another table to this module? Upload it here.")
+                    uploaded_files = st.file_uploader(
+                        "Supported: .db, .sqlite, .csv, .parquet, .xlsx, .json", 
+                        type=["db", "sqlite", "csv", "parquet", "xlsx", "json"], 
+                        accept_multiple_files=True
+                    )
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.form_submit_button("Save Module Changes", type="primary"):
+                        q_edit.title = new_title
+                        q_edit.description = new_desc
+                        q_edit.due_date = datetime.combine(new_date, new_time)
+                        
+                        if uploaded_files:
+                            os.makedirs("datasets", exist_ok=True)
+                            for uf in uploaded_files:
+                                safe_filename = f"quiz_{q_edit.quiz_id}_{uf.name}"
+                                dataset_path = os.path.join("datasets", safe_filename)
+                                with open(dataset_path, "wb") as f:
+                                    f.write(uf.getbuffer())
+                                    
                         db.commit()
-                        st.success(f"Module '{title}' published successfully! Deadline set for {full_deadline.strftime('%Y-%m-%d %H:%M')}")
-                    else:
-                        st.error("Please provide a module title.")
+                        st.success("Module updated successfully!")
+                        st.session_state.editing_quiz_id = None
+                        st.rerun()
+
 
         # ----------------------------
         # TAB 2: ADD QUESTIONS
@@ -181,14 +318,14 @@ def admin_dashboard():
             quizzes = db.query(Quiz).all()
             
             if not quizzes:
-                st.info("Please publish an assessment module first.")
+                st.info("Please create an assessment module first.")
             else:
                 col1, col2 = st.columns(2)
                 with col1:
                     selected_quiz = st.selectbox("Target Assessment:", [q.title for q in quizzes], key="add_q_quiz")
                     quiz_id = next(q.quiz_id for q in quizzes if q.title == selected_quiz)
                 with col2:
-                    question_type = st.selectbox("Question Format", ["sql", "python", "multiple_choice", "text"])
+                    question_type = st.selectbox("Question Format", ["sql", "python", "sql_mcq", "python_mcq", "multiple_choice", "text"])
 
                 with st.form("add_question_form", clear_on_submit=True):
                     q_col1, q_col2 = st.columns([1.2, 1], gap="large")
@@ -204,49 +341,52 @@ def admin_dashboard():
                         schema_info = None
 
                     with q_col2:
-                        if question_type in ["sql", "python"]:
-                            st.markdown("**Dataset Attachment**")
-                            uploaded_file = st.file_uploader(
-                                "Supported: .db, .sqlite, .csv, .parquet, .xlsx, .json", 
-                                type=["db", "sqlite", "csv", "parquet", "xlsx", "json"]
-                            )
+                        if question_type in ["sql", "python", "sql_mcq", "python_mcq"]:
+                            st.markdown("**Dataset Selection**")
                             
-                            if uploaded_file:
-                                os.makedirs("datasets", exist_ok=True)
-                                file_ext = uploaded_file.name.split('.')[-1]
-                                safe_filename = f"{uuid.uuid4().hex}.{file_ext}"
-                                dataset_path = os.path.join("datasets", safe_filename)
-                                
-                                with open(dataset_path, "wb") as f:
-                                    f.write(uploaded_file.getbuffer())
-                                    
-                                if file_ext in ["db", "sqlite"]:
-                                    schema_info = extract_sqlite_schema(dataset_path)
-                                    st.success("✓ Relational Database connected.")
-                                else:
-                                    schema_info = f"**Dataset:** `{uploaded_file.name}` (Single Table)"
-                                    st.success(f"✓ File `{uploaded_file.name}` uploaded.")
+                            # UPDATED: Use our new robust scanner strictly for datasets/
+                            quiz_files = get_available_datasets()
+                            
+                            if quiz_files:
+                                selected_file = st.selectbox("Select Data Source", ["None"] + quiz_files)
+                                if selected_file != "None":
+                                    dataset_path = selected_file # We already have the full relative path
+                                    if selected_file.endswith(("db", "sqlite")):
+                                        schema_info = extract_sqlite_schema(dataset_path)
+                                        st.success("✓ Relational Database linked.")
+                                        with st.expander("Preview Schema"):
+                                            st.markdown(schema_info, unsafe_allow_html=True)
+                                    else:
+                                        schema_info = f"**Dataset:** `{selected_file}`"
+                                        st.success(f"✓ File `{selected_file}` linked.")
+                            else:
+                                st.info("No datasets uploaded yet. You can upload them in the 'Manage Modules' tab.")
 
-                        if question_type == "multiple_choice":
-                            st.markdown("**Multiple Choice Options**")
-                            opt_col1, opt_col2 = st.columns(2)
-                            with opt_col1:
-                                opt_a = st.text_input("Option A")
-                                opt_c = st.text_input("Option C")
-                            with opt_col2:
-                                opt_b = st.text_input("Option B")
-                                opt_d = st.text_input("Option D")
-                            correct_ans = st.selectbox("Which option is correct?", ["A", "B", "C", "D"])
-                            expected_answer = st.text_area("Explanation", placeholder="Explain why this answer is correct...")
-                        else:
-                            st.markdown(f"**{question_type.upper()} Solution**")
-                            expected_answer = st.text_area("Expected Code / Answer", placeholder=f"Write the correct {question_type.upper()} solution here...", height=150)
+                    # --- DYNAMIC FORMS BASED ON FORMAT ---
+                    if question_type in ["multiple_choice", "sql_mcq", "python_mcq"]:
+                        st.markdown("**Multiple Choice Options**")
+                        opt_col1, opt_col2 = st.columns(2)
+                        with opt_col1:
+                            opt_a = st.text_input("Option A")
+                            opt_c = st.text_input("Option C")
+                        with opt_col2:
+                            opt_b = st.text_input("Option B")
+                            opt_d = st.text_input("Option D")
+                        correct_ans = st.selectbox("Which option is correct?", ["A", "B", "C", "D"])
+                    
+                    st.markdown("**Grading / Solution Key**")
+                    if question_type in ["sql", "python", "sql_mcq", "python_mcq"]:
+                        expected_answer = st.text_area(f"Expected Code ({question_type.upper()})", placeholder="Write the correct code/query here. This is used to auto-grade the student's submission.", height=150)
+                    elif question_type == "multiple_choice":
+                        expected_answer = st.text_area("Explanation", placeholder="Explain why this answer is correct. Students see this after the deadline.", height=100)
+                    else:
+                        expected_answer = st.text_area("Expected Answer", height=150)
 
                     st.markdown("<br>", unsafe_allow_html=True)
                     save_btn = st.form_submit_button("Save Question to Module", type="primary")
 
                     if save_btn and question_text:
-                        if question_type == "multiple_choice":
+                        if question_type in ["multiple_choice", "sql_mcq", "python_mcq"]:
                             options_dict = {"A": opt_a, "B": opt_b, "C": opt_c, "D": opt_d, "Correct": correct_ans}
                             options_json = json.dumps(options_dict)
                         
@@ -293,7 +433,7 @@ def admin_dashboard():
                                     st.markdown(f"**Q{i} | {q.question_type.upper()} | {q.points} Pts**")
                                     st.caption(f"{q.question_text[:120]}...")
                                 with c2:
-                                    if st.button("View / Edit", key=f"open_q_{q.question_id}"):
+                                    if st.button("⚙️ Edit", key=f"open_q_{q.question_id}"):
                                         st.session_state.editing_q_id = q.question_id
                                         st.rerun()
 
@@ -311,17 +451,28 @@ def admin_dashboard():
                             edit_ans = st.text_area("Expected Answer/Code", value=q.expected_answer, height=200)
                             edit_pts = st.number_input("Points", value=q.points, min_value=1)
                             
+                            # UPDATED: Use robust scanner strictly for datasets/
+                            quiz_files = get_available_datasets()
+                            
+                            options = ["None"] + quiz_files
+                            current_file = q.dataset_path if q.dataset_path else "None"
+                            if current_file not in options and current_file != "None":
+                                options.append(current_file)
+                                
+                            edit_dataset = st.selectbox("Update Dataset for this Question", options, index=options.index(current_file) if current_file in options else 0)
+                            
                             st.markdown("<br>", unsafe_allow_html=True)
                             c1, c2 = st.columns([1, 1])
                             with c1:
                                 update_q_btn = st.form_submit_button("Save Changes", type="primary")
                             with c2:
-                                delete_q_btn = st.form_submit_button("Delete Entire Question")
+                                delete_q_btn = st.form_submit_button("🗑️ Delete Entire Question")
                                 
                             if update_q_btn:
                                 q.question_text = edit_text
                                 q.expected_answer = edit_ans
                                 q.points = edit_pts
+                                q.dataset_path = edit_dataset if edit_dataset != "None" else None
                                 db.commit()
                                 st.success("Question updated successfully!")
                                 st.session_state.editing_q_id = None # Go back to list
@@ -380,65 +531,77 @@ def admin_dashboard():
                 
                 total_possible_points = sum(q.points for q in module_questions)
                 
+                # Verify if deadline has passed
+                wat_now = get_wat_time()
+                is_past_deadline = selected_quiz_obj.due_date and wat_now > selected_quiz_obj.due_date
+                
                 if not submissions:
                     st.info("No students have submitted this assessment yet.")
                 else:
                     # Calculate Detailed Metrics
                     scores = [sub.score for sub in submissions]
-                    avg_score = sum(scores) / len(scores)
-                    high_score = max(scores)
-                    low_score = min(scores)
+                    avg_score = sum(scores) / len(scores) if scores else 0
+                    high_score = max(scores) if scores else 0
+                    low_score = min(scores) if scores else 0
                     
                     pass_threshold = total_possible_points * 0.5 
-                    passed_students = sum(1 for s in scores if s >= pass_threshold)
-                    failed_students = len(scores) - passed_students
                     
-                    pass_rate = (passed_students / len(scores)) * 100
-                    fail_rate = (failed_students / len(scores)) * 100
+                    if is_past_deadline:
+                        passed_students = sum(1 for s in scores if s >= pass_threshold)
+                        failed_students = len(scores) - passed_students
+                        pass_rate = (passed_students / len(scores)) * 100
+                        fail_rate = (failed_students / len(scores)) * 100
+                    else:
+                        passed_students, failed_students, pass_rate, fail_rate = 0, 0, 0.0, 0.0
 
                     # Display Metrics
                     m1, m2, m3, m4 = st.columns(4)
                     m1.metric("Total Submissions", len(submissions))
-                    m2.metric("Average Score", f"{avg_score:.0f} / {total_possible_points}")
-                    m3.metric("Pass Rate", f"{pass_rate:.1f}%", f"{passed_students} Passed", delta_color="normal")
-                    m4.metric("Fail Rate", f"{fail_rate:.1f}%", f"-{failed_students} Failed", delta_color="inverse")
                     
-                    st.markdown(f"**Score Extremes:** Highest: `{high_score}` | Lowest: `{low_score}`")
+                    if is_past_deadline:
+                        m2.metric("Average Score", f"{avg_score:.0f} / {total_possible_points}")
+                        m3.metric("Pass Rate", f"{pass_rate:.1f}%", f"{passed_students} Passed", delta_color="normal")
+                        m4.metric("Fail Rate", f"{fail_rate:.1f}%", f"-{failed_students} Failed", delta_color="inverse")
+                        st.markdown(f"**Score Extremes:** Highest: `{high_score}` | Lowest: `{low_score}`")
+                    else:
+                        m2.metric("Status", "Pending Deadline")
+                        st.info("Pass/Fail rates will calculate automatically once the deadline is reached.")
+                        
                     st.markdown("---")
 
-                    # --- QUESTION-BY-QUESTION STATS ---
-                    st.markdown('<div class="section-header">Question Difficulty Analysis</div>', unsafe_allow_html=True)
-                    
-                    q_stats_data = []
-                    for i, q in enumerate(module_questions, 1):
-                        answers = db.query(Answer).filter(Answer.question_id == q.question_id).all()
+                    # --- QUESTION-BY-QUESTION STATS (Only meaningful if grading has occurred) ---
+                    if is_past_deadline:
+                        st.markdown('<div class="section-header">Question Difficulty Analysis</div>', unsafe_allow_html=True)
                         
-                        if answers:
-                            total_attempts = len(answers)
-                            correct_count = sum(1 for a in answers if a.is_correct)
-                            avg_pts_earned = sum(a.points_awarded for a in answers) / total_attempts if hasattr(answers[0], 'points_awarded') else 0
-                            q_pass_rate = (correct_count / total_attempts) * 100
-                            q_fail_rate = 100 - q_pass_rate
-                        else:
-                            total_attempts = 0
-                            q_pass_rate = 0
-                            q_fail_rate = 0
-                            avg_pts_earned = 0
+                        q_stats_data = []
+                        for i, q in enumerate(module_questions, 1):
+                            answers = db.query(Answer).filter(Answer.question_id == q.question_id).all()
                             
-                        q_stats_data.append({
-                            "Q#": f"Q{i}",
-                            "Question Preview": q.question_text[:45] + "...",
-                            "Type": q.question_type.upper(),
-                            "Max Pts": q.points,
-                            "Avg Pts Earned": f"{avg_pts_earned:.1f}",
-                            "Pass Rate (%)": f"{q_pass_rate:.1f}%",
-                            "Fail Rate (%)": f"{q_fail_rate:.1f}%"
-                        })
-                        
-                    df_q_stats = pd.DataFrame(q_stats_data)
-                    st.dataframe(df_q_stats, use_container_width=True, hide_index=True)
-
-                    st.markdown("---")
+                            if answers:
+                                total_attempts = len(answers)
+                                correct_count = sum(1 for a in answers if a.is_correct)
+                                avg_pts_earned = sum(a.points_awarded for a in answers) / total_attempts if hasattr(answers[0], 'points_awarded') else 0
+                                q_pass_rate = (correct_count / total_attempts) * 100
+                                q_fail_rate = 100 - q_pass_rate
+                            else:
+                                total_attempts = 0
+                                q_pass_rate = 0
+                                q_fail_rate = 0
+                                avg_pts_earned = 0
+                                
+                            q_stats_data.append({
+                                "Q#": f"Q{i}",
+                                "Question Preview": q.question_text[:45] + "...",
+                                "Type": q.question_type.upper(),
+                                "Max Pts": q.points,
+                                "Avg Pts Earned": f"{avg_pts_earned:.1f}",
+                                "Pass Rate (%)": f"{q_pass_rate:.1f}%",
+                                "Fail Rate (%)": f"{q_fail_rate:.1f}%"
+                            })
+                            
+                        df_q_stats = pd.DataFrame(q_stats_data)
+                        st.dataframe(df_q_stats, use_container_width=True, hide_index=True)
+                        st.markdown("---")
                     
                     # Learner Roster Output
                     st.markdown('<div class="section-header">Individual Learner Results</div>', unsafe_allow_html=True)
@@ -446,12 +609,16 @@ def admin_dashboard():
                     for sub in submissions:
                         student = db.query(User).filter(User.id == sub.student_id).first()
                         sub_time = sub.submitted_at.strftime("%b %d, %Y - %H:%M") if sub.submitted_at else "N/A"
-                        status = "✅ Pass" if sub.score >= pass_threshold else "❌ Fail"
+                        
+                        if is_past_deadline:
+                            status = "✅ Pass" if sub.score >= pass_threshold else "❌ Fail"
+                        else:
+                            status = "⏳ Pending Deadline"
 
                         results_data.append({
                             "Learner Name": student.name if student else "Unknown",
                             "Email": student.email if student else "Unknown",
-                            "Final Score": str(int(float(sub.score))) if sub.score is not None else "0",
+                            "Final Score": str(int(float(sub.score))) if sub.score is not None and is_past_deadline else "Pending",
                             "Status": status,
                             "Submitted On": sub_time
                         })

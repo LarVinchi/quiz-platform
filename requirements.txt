@@ -4,4 +4,4 @@ psycopg2-binary
 pandas
 sendgrid
 streamlit-ace
-pandas
+streamlit-code-editor

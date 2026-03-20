@@ -9,7 +9,7 @@ import traceback
 from datetime import datetime, timedelta
 from app.core.database import SessionLocal
 from app.core.models import Quiz, Question, User, Submission, Answer
-from streamlit_ace import st_ace 
+from code_editor import code_editor
 
 def get_db():
     db = SessionLocal()
@@ -18,7 +18,6 @@ def get_db():
 
 # --- Helper for West Africa Time (WAT) ---
 def get_wat_time():
-    # WAT is UTC + 1 hour
     return datetime.utcnow() + timedelta(hours=1)
 
 # --- DRACULA PRO IDE CSS & DASHBOARD CARDS ---
@@ -122,6 +121,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- PROFESSIONAL DATA TOOLS ---
+
 def generate_mermaid_erd(dataset_path):
     try:
         if dataset_path and (dataset_path.endswith('.db') or dataset_path.endswith('.sqlite')):
@@ -181,7 +181,12 @@ def execute_sql(query, dataset_path=None):
         if not dataset_path or not os.path.exists(dataset_path): conn = sqlite3.connect(':memory:')
         else: conn = sqlite3.connect(dataset_path)
         return pd.read_sql_query(query, conn), None
-    except Exception as e: return None, str(e)
+    except TypeError as e:
+        if "'NoneType' object is not iterable" in str(e):
+            return pd.DataFrame({"Terminal Status": ["Query executed successfully. No table data returned."]}), None
+        return None, str(e)
+    except Exception as e: 
+        return None, str(e)
     finally:
         if conn: conn.close()
 
@@ -215,7 +220,6 @@ def render_dashboard(db):
         st.info("No active assessments assigned to you at this time.")
         return
 
-    # Sort quizzes: Closest deadline first. No deadline goes to the bottom.
     quizzes.sort(key=lambda q: q.due_date if q.due_date else datetime.max)
 
     for quiz in quizzes:
@@ -283,9 +287,6 @@ def render_workspace(db, quiz_id):
     is_past_deadline = quiz.due_date and wat_now > quiz.due_date
     is_review_mode = is_past_deadline and existing_sub
 
-    # -------------------------------------------------------------
-    # NEW PROFESSIONAL CONFIRMATION DIALOG INTERCEPTOR
-    # -------------------------------------------------------------
     if st.session_state['confirm_submit']:
         st.markdown("<br><br>", unsafe_allow_html=True)
         _, center_col, _ = st.columns([2.5, 5, 2.5])
@@ -340,13 +341,39 @@ def render_workspace(db, quiz_id):
             for pa in db.query(Answer).filter(Answer.submission_id == existing_sub.submission_id).all(): 
                 st.session_state['student_answers'][pa.question_id] = pa.student_answer
 
-    left_pane, right_pane = st.columns([4, 6], gap="medium")
+    # --- 50/50 SPLIT ---
+    left_pane, right_pane = st.columns(2, gap="large")
 
+    # ==========================================================
+    # LEFT PANE: Instructions, Side-by-Side Options, Schema Grid
+    # ==========================================================
     with left_pane:
-        st.markdown(f'<div class="problem-box"><b>Instruction:</b><br>{current_q.question_text}</div>', unsafe_allow_html=True)
+        
+        if current_q.question_type in ["multiple_choice", "sql_mcq", "python_mcq"]:
+            q_col, opt_col = st.columns([6, 4], gap="small")
+            
+            with q_col:
+                st.markdown(f'<div class="problem-box" style="height: 100%;"><b>Instruction:</b><br>{current_q.question_text}</div>', unsafe_allow_html=True)
+                
+            with opt_col:
+                st.markdown('<div class="console-label" style="margin-top:0px; margin-bottom:5px;">Select Answer:</div>', unsafe_allow_html=True)
+                options = json.loads(current_q.options) if current_q.options else {}
+                choices = [f"A) {options.get('A','')}", f"B) {options.get('B','')}", f"C) {options.get('C','')}", f"D) {options.get('D','')}"]
+                prev_ans = st.session_state['student_answers'].get(current_q.question_id, choices[0])
+                if prev_ans not in choices: prev_ans = choices[0]
+                
+                if not is_past_deadline:
+                    st.session_state['student_answers'][current_q.question_id] = st.radio("Options:", choices, index=choices.index(prev_ans), label_visibility="collapsed")
+                else:
+                    st.info(f"Locked: **{prev_ans}**")
+        else:
+            st.markdown(f'<div class="problem-box"><b>Instruction:</b><br>{current_q.question_text}</div>', unsafe_allow_html=True)
+            
+        st.markdown("<br>", unsafe_allow_html=True)
         
         if current_q.dataset_path and os.path.exists(current_q.dataset_path):
             tab_erd, tab_data = st.tabs(["Database Schema", "Data Previews"])
+            
             with tab_erd:
                 mermaid_code = generate_mermaid_erd(current_q.dataset_path)
                 if mermaid_code:
@@ -356,17 +383,35 @@ def render_workspace(db, quiz_id):
                             import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
                             mermaid.initialize({{ startOnLoad: true, theme: 'dark' }});
                         </script>
-                    """, height=350, scrolling=True)
-                else: st.info("No relational schema available.")
+                    """, height=600, scrolling=False)
+                else: 
+                    st.info("No relational schema available.")
                     
             with tab_data:
                 previews = get_table_previews(current_q.dataset_path)
                 if previews:
-                    for table_name, df_preview in previews.items():
-                        st.markdown(f"<span style='color:#38BDF8; font-size:13px; font-weight:600;'>Table: {table_name}</span>", unsafe_allow_html=True)
-                        st.dataframe(df_preview, use_container_width=True, hide_index=True)
+                    table_names = list(previews.keys())
+                    preview_tabs = st.tabs(table_names)
+                    
+                    for i, t_name in enumerate(table_names):
+                        with preview_tabs[i]:
+                            st.dataframe(previews[t_name], use_container_width=False, hide_index=True)
 
+    # ==========================================================
+    # RIGHT PANE: Unified Coding Editor & Outputs 
+    # ==========================================================
     with right_pane:
+        
+        # --- EDITOR SETTINGS ---
+        editor_options = {
+            "enableBasicAutocompletion": True, 
+            "enableLiveAutocompletion": True, 
+            "enableSnippets": True,
+            "showLineNumbers": True,
+            "tabSize": 4,
+            "fontSize": "13px"
+        }
+
         if is_review_mode:
             student_ans_record = db.query(Answer).filter(Answer.submission_id == existing_sub.submission_id, Answer.question_id == current_q.question_id).first()
             if student_ans_record and student_ans_record.is_correct: st.markdown("<div class='result-banner-correct'>✓ Correct (+{} pts)</div>".format(current_q.points), unsafe_allow_html=True)
@@ -374,107 +419,140 @@ def render_workspace(db, quiz_id):
                 
             st.markdown('<div class="console-label">Your Submission</div>', unsafe_allow_html=True)
             if current_q.question_type in ["python", "sql"]:
-                st_ace(value=student_ans_record.student_answer if student_ans_record else "", language=current_q.question_type, theme="dracula", readonly=True, height=150, key=f"rev_{current_q.question_id}")
+                ans_val = student_ans_record.student_answer if student_ans_record else ""
+                rev_options = editor_options.copy()
+                rev_options["readOnly"] = True
+                code_editor(ans_val, lang=current_q.question_type, theme="dracula", options=rev_options, key=f"rev_{current_q.question_id}")
             else: st.info(student_ans_record.student_answer if student_ans_record else "No answer submitted.")
 
             st.markdown('<div class="console-label">Expected Answer / Explanation</div>', unsafe_allow_html=True)
             if current_q.question_type in ["python", "sql"]:
-                st_ace(value=current_q.expected_answer, language=current_q.question_type, theme="dracula", readonly=True, height=150, key=f"exp_{current_q.question_id}")
+                exp_options = editor_options.copy()
+                exp_options["readOnly"] = True
+                code_editor(current_q.expected_answer, lang=current_q.question_type, theme="dracula", options=exp_options, key=f"exp_{current_q.question_id}")
             elif current_q.question_type in ["multiple_choice", "sql_mcq", "python_mcq"]:
                 opts = json.loads(current_q.options) if current_q.options else {}
                 st.success(f"Correct Option: **{opts.get('Correct', '')}**\n\n{current_q.expected_answer if current_q.question_type == 'multiple_choice' else ''}")
                 
-                # Render the expected SQL or Python code for the hybrid questions
                 if current_q.question_type in ["sql_mcq", "python_mcq"] and current_q.expected_answer:
                     st.markdown("**Expected Code to arrive at this answer:**")
                     lang = "sql" if current_q.question_type == "sql_mcq" else "python"
-                    st_ace(value=current_q.expected_answer, language=lang, theme="dracula", readonly=True, height=120, key=f"exp_code_{current_q.question_id}")
+                    exp_options = editor_options.copy()
+                    exp_options["readOnly"] = True
+                    code_editor(current_q.expected_answer, lang=lang, theme="dracula", options=exp_options, key=f"exp_code_{current_q.question_id}")
             else: st.success(current_q.expected_answer)
                 
-        else:
-            if current_q.question_type in ["python", "sql"]:
-                default_idx = 0 if current_q.question_type == "sql" else 1
-                tool_mode = st.radio("Environment:", ["SQL", "Python"], index=default_idx, horizontal=True, label_visibility="collapsed")
-                prev_ans = st.session_state['student_answers'].get(current_q.question_id, "")
-                lang_label = "main.py" if tool_mode == "Python" else "main.sql"
+        else: # Active Workspace
+            is_pure_code = current_q.question_type in ["sql", "python"]
+            is_hybrid = current_q.question_type in ["sql_mcq", "python_mcq"]
+
+            if is_pure_code or is_hybrid:
                 
+                default_idx = 0 if "sql" in current_q.question_type else 1
+                
+                st.markdown('<div class="console-label">Select Programming Environment</div>', unsafe_allow_html=True)
+                tool_mode = st.radio(
+                    "Environment:", 
+                    ["SQL", "Python"], 
+                    index=default_idx, 
+                    horizontal=True, 
+                    label_visibility="collapsed",
+                    key=f"env_toggle_{current_q.question_id}"
+                )
+                
+                lang = "sql" if tool_mode == "SQL" else "python"
+                lang_label = "main.py" if lang == "python" else "main.sql"
+                
+                # --- COOL ITALICIZED EDITOR LABEL ---
+                st.markdown(f'<div class="console-label" style="font-style: italic; color: #38BDF8; font-size: 12px; letter-spacing: 1px;">{tool_mode} Editor</div>', unsafe_allow_html=True)
+                
+                default_code = "-- Write your SQL query here\n" if lang == "sql" else "import pandas as pd\nimport sqlite3\n\nconn = sqlite3.connect(DATASET_PATH)\n# Write your pandas code here\n"
+                
+                ide_key = f"ide_code_{current_q.question_id}_{lang}"
+                
+                if is_pure_code:
+                    prev_code = st.session_state['student_answers'].get(current_q.question_id, "")
+                    if not prev_code: prev_code = default_code
+                else:
+                    if ide_key not in st.session_state: st.session_state[ide_key] = default_code
+                    prev_code = st.session_state[ide_key]
+
                 with st.container(border=True):
                     st.markdown(f'<div class="mac-window"><div class="mac-header"><div class="mac-dot red"></div><div class="mac-dot yellow"></div><div class="mac-dot green"></div><div class="mac-title">{lang_label}</div></div></div>', unsafe_allow_html=True)
-                    user_code = st_ace(
-                        value=prev_ans, language="python" if tool_mode == "Python" else "sql", theme="dracula", height=220, 
-                        key=f"ace_{current_q.question_id}", auto_update=True, readonly=is_past_deadline
+                    
+                    active_options = editor_options.copy()
+                    
+                    if is_past_deadline: 
+                        active_options["readOnly"] = True
+                        custom_btns = []
+                    else:
+                        # Re-instated the internal "Run Code" button that hovers inside the editor
+                        custom_btns = [{
+                            "name": "Run Code",
+                            "feather": "Play",
+                            "primary": True,
+                            "hasText": True,
+                            "showWithIcon": True,
+                            "commands": ["submit"],
+                            "style": {"bottom": "0.5rem", "right": "0.5rem"}
+                        }]
+                    
+                    editor_response = code_editor(
+                        prev_code, 
+                        lang=lang, 
+                        theme="dracula", 
+                        options=active_options, 
+                        buttons=custom_btns,
+                        key=f"code_editor_{current_q.question_id}_{lang}" 
                     )
                     
+                    if editor_response and isinstance(editor_response, dict):
+                        if 'text' in editor_response and editor_response['text']:
+                            user_code = editor_response['text']
+                        elif editor_response.get('type') == "":
+                            user_code = prev_code
+                        else:
+                            user_code = ""
+                    else:
+                        user_code = prev_code
+                    
                     if not is_past_deadline:
-                        _, col_btn = st.columns([7.5, 2.5]) 
-                        with col_btn: run_btn = st.button("Execute Code", type="primary", use_container_width=True)
-                        st.session_state['student_answers'][current_q.question_id] = user_code
+                        if is_pure_code:
+                            st.session_state['student_answers'][current_q.question_id] = user_code
+                        else:
+                            st.session_state[ide_key] = user_code
+
+                # --- STATEFUL TERMINAL CACHING ---
+                run_btn = editor_response.get("type") == "submit" if editor_response else False
+                terminal_out_key = f"terminal_out_{current_q.question_id}_{lang}"
 
                 if not is_past_deadline and run_btn:
-                    st.markdown('<div class="console-label">Terminal Output</div>', unsafe_allow_html=True)
-                    if tool_mode == "Python":
+                    if lang == "python":
                         output, error = execute_python(user_code, current_q.dataset_path)
-                        if error: st.markdown(f"<div class='console-error-output'>{error}</div>", unsafe_allow_html=True)
-                        else: st.markdown(f"<div class='console-output'>{output if output else 'Success (No output)'}</div>", unsafe_allow_html=True)
+                        st.session_state[terminal_out_key] = {"is_sql": False, "output": output, "error": error}
                     else:
                         df_out, error = execute_sql(user_code, current_q.dataset_path)
-                        if error: st.markdown(f"<div class='console-error-output'>{error}</div>", unsafe_allow_html=True)
-                        else: st.dataframe(df_out, use_container_width=True, hide_index=True)
+                        st.session_state[terminal_out_key] = {"is_sql": True, "output": df_out, "error": error}
 
-            # ==========================================================
-            # NEW: HYBRID MCQ + SCRATCHPAD LOGIC (Supports SQL and Python)
-            # ==========================================================
-            elif current_q.question_type in ["sql_mcq", "python_mcq"]:
-                st.markdown('<div class="console-label">Data Scratchpad (Investigate to find the answer)</div>', unsafe_allow_html=True)
-                
-                lang = "sql" if current_q.question_type == "sql_mcq" else "python"
-                lang_label = "scratchpad.sql" if lang == "sql" else "scratchpad.py"
-                
-                scratch_key = f"scratch_{current_q.question_id}"
-                if scratch_key not in st.session_state: 
-                    st.session_state[scratch_key] = "SELECT * FROM dataset LIMIT 5;" if lang == "sql" else "import pandas as pd\ndf = pd.read_csv(DATASET_PATH)\nprint(df.head())"
+                # Always render the cached terminal output if it exists so it doesn't clear
+                if terminal_out_key in st.session_state:
+                    st.markdown('<div class="console-label">Terminal Output</div>', unsafe_allow_html=True)
+                    res = st.session_state[terminal_out_key]
                     
-                with st.container(border=True):
-                    st.markdown(f'<div class="mac-window"><div class="mac-header"><div class="mac-dot red"></div><div class="mac-dot yellow"></div><div class="mac-dot green"></div><div class="mac-title">{lang_label}</div></div></div>', unsafe_allow_html=True)
-                    scratch_code = st_ace(value=st.session_state[scratch_key], language=lang, theme="dracula", height=150, key=f"ace_scratch_{current_q.question_id}", auto_update=True, readonly=is_past_deadline)
-                    
-                    if not is_past_deadline:
-                        _, col_btn = st.columns([7.5, 2.5]) 
-                        with col_btn: run_btn = st.button("Run Scratchpad", type="primary", use_container_width=True, key=f"run_{current_q.question_id}")
-                        st.session_state[scratch_key] = scratch_code
-
-                if not is_past_deadline and run_btn:
-                    st.markdown('<div class="console-label">Scratchpad Output</div>', unsafe_allow_html=True)
-                    if lang == "python":
-                        output, error = execute_python(scratch_code, current_q.dataset_path)
-                        if error: st.markdown(f"<div class='console-error-output'>{error}</div>", unsafe_allow_html=True)
-                        else: st.markdown(f"<div class='console-output'>{output if output else 'Success (No output)'}</div>", unsafe_allow_html=True)
+                    if not res["is_sql"]:
+                        if res["error"]: 
+                            st.markdown(f"<div class='console-error-output'>{res['error']}</div>", unsafe_allow_html=True)
+                        else: 
+                            out_text = res['output'] if res['output'] else 'Success (No output)'
+                            st.markdown(f"<div class='console-output'>{out_text}</div>", unsafe_allow_html=True)
                     else:
-                        df_out, error = execute_sql(scratch_code, current_q.dataset_path)
-                        if error: st.markdown(f"<div class='console-error-output'>{error}</div>", unsafe_allow_html=True)
-                        else: st.dataframe(df_out, use_container_width=True, hide_index=True)
-
-                st.markdown('<div class="console-label">Select Final Answer</div>', unsafe_allow_html=True)
-                options = json.loads(current_q.options) if current_q.options else {}
-                choices = [f"A) {options.get('A','')}", f"B) {options.get('B','')}", f"C) {options.get('C','')}", f"D) {options.get('D','')}"]
-                prev_ans = st.session_state['student_answers'].get(current_q.question_id, choices[0])
-                if prev_ans not in choices: prev_ans = choices[0]
-                
-                if not is_past_deadline:
-                    st.session_state['student_answers'][current_q.question_id] = st.radio("Options:", choices, index=choices.index(prev_ans), label_visibility="collapsed")
-                else: st.info(f"Your locked answer: {prev_ans}")
-            # ==========================================================
+                        if res["error"]: 
+                            st.markdown(f"<div class='console-error-output'>{res['error']}</div>", unsafe_allow_html=True)
+                        else: 
+                            st.dataframe(res["output"], use_container_width=False, hide_index=True)
 
             elif current_q.question_type == "multiple_choice":
-                st.markdown('<div class="console-label">Select Response</div>', unsafe_allow_html=True)
-                options = json.loads(current_q.options) if current_q.options else {}
-                choices = [f"A) {options.get('A','')}", f"B) {options.get('B','')}", f"C) {options.get('C','')}", f"D) {options.get('D','')}"]
-                prev_ans = st.session_state['student_answers'].get(current_q.question_id, choices[0])
-                if prev_ans not in choices: prev_ans = choices[0]
-                
-                if not is_past_deadline:
-                    st.session_state['student_answers'][current_q.question_id] = st.radio("Options:", choices, index=choices.index(prev_ans), label_visibility="collapsed")
-                else: st.info(f"Your locked answer: {prev_ans}")
+                st.info("👈 Please select your answer from the options provided on the left side.")
             
             else:
                 st.markdown('<div class="console-label">Written Response</div>', unsafe_allow_html=True)
@@ -503,9 +581,7 @@ def submit_assessment(db, quiz, questions, existing_sub, is_final=True):
         ans_text = st.session_state['student_answers'].get(q.question_id, "")
         is_correct = False
 
-        # ONLY RUN HEAVY GRADING LOGIC IF THEY ARE OFFICIALLY SUBMITTING
         if is_final:
-            # All 3 MCQ variations grade the same way: by checking if they chose the "Correct" option letter
             if q.question_type in ["multiple_choice", "sql_mcq", "python_mcq"]:
                 opts = json.loads(q.options) if q.options else {}
                 if ans_text.startswith(opts.get('Correct', '')): is_correct = True
@@ -522,7 +598,6 @@ def submit_assessment(db, quiz, questions, existing_sub, is_final=True):
             
         db.add(Answer(submission_id=target_sub.submission_id, question_id=q.question_id, student_answer=ans_text, is_correct=is_correct))
 
-    # Calculate final score only if final, otherwise leave as draft 0
     if is_final:
         target_sub.score = int(total_points_earned)
         
