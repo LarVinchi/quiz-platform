@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
-from database import Base, engine
+from app.core.database import Base, engine
 
 # --- UNIFIED USER MODEL ---
 class User(Base):
