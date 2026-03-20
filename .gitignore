@@ -1,0 +1,8 @@
+# .gitignore
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+quiz_app.db
+seeddata.py
+generate_sample_db.py

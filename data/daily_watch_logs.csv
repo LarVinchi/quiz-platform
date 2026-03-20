@@ -1,0 +1,7 @@
+log_id,user_id,content_id,minutes_watched,device_type
+1001,101,5001,45,Smart TV
+1002,102,5002,120,Tablet
+1003,101,5003,30,Mobile
+1004,104,5001,90,Smart TV
+1005,105,5004,15,Mobile
+1006,103,5002,60,Laptop

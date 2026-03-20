@@ -1,0 +1,22 @@
+[theme]
+# Professional Indigo Primary
+primaryColor = "#4F46E5"
+
+# Dark Background
+backgroundColor = "#0A0F1A"
+
+# Slightly lighter background for inputs and containers
+secondaryBackgroundColor = "#111827"
+
+# White text for contrast
+textColor = "#F9FAFB"
+
+font = "sans serif"
+
+[server]
+enableCORS = false
+headless = true
+
+[layout]
+# Globally default to wide mode
+wideMode = true
