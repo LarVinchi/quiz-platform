@@ -16,7 +16,7 @@ def setup_movie_database():
     print("📦 Building normalized movies.db from raw CSV files...")
     
     # 1. Define Paths
-    raw_data_dir = "raw_data" # Where we read the CSVs from
+    raw_data_dir = "raw_data/sql_fundamentals/" # Where we read the CSVs from
     app_data_dir = "datasets" # Where we save the finished DB to
     
     db_path = os.path.join(app_data_dir, "movies.db")
@@ -130,8 +130,8 @@ def seed_movie_modules():
         print("Creating Module: Comprehensive Data Analytics (SQL)...")
         
         quiz = Quiz(
-            title="Advanced Analytics: Movie Rental Database",
-            description="Objective: Evaluate advanced data manipulation using SQL to investigate a normalized movie rental database.",
+            title="SQL Fundamentals: Exploring the Movies Dataset",
+            description="Objective: Dive into a comprehensive movie database to build your foundational data analysis skills. In this module, you will get hands-on experience writing core SQL queries, filtering records, and using JOINs to connect multiple tables and uncover insights.",
             active=True,
             due_date=datetime.utcnow() + timedelta(days=14) 
         )
