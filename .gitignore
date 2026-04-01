@@ -7,3 +7,4 @@ quiz_app.db
 seeddata.py
 generate_sample_db.py
 raw_data
+query.sql
